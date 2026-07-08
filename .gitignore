@@ -1,0 +1,6 @@
+/diapason-uploader
+/out/
+/music/
+/data/
+*.tmp
+.diapason-uploader-index.json

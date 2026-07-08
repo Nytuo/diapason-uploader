@@ -1,0 +1,43 @@
+# Example: run the Diapason Uploader next to Navidrome, sharing the music volume.
+#
+#   docker compose up -d
+#
+# The uploader and Navidrome MUST mount the SAME music directory so files the
+# uploader writes are seen by Navidrome's scanner.
+
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    restart: unless-stopped
+    ports:
+      - "4533:4533"
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_LOGLEVEL: info
+    volumes:
+      - ./data/navidrome:/data
+      - ./music:/music:rw
+
+  diapason-uploader:
+    build: .
+    # image: ghcr.io/nytuo/diapason-uploader:latest   # once published
+    restart: unless-stopped
+    ports:
+      # Bind to LAN only? map to "127.0.0.1:8688:8688" and put a reverse proxy in front.
+      - "8688:8688"
+    environment:
+      DIAPASON_MUSIC_DIR: /music
+      DIAPASON_LISTEN_ADDR: 0.0.0.0:8688
+      DIAPASON_AUTH_TOKEN: "change-me-to-a-long-random-token"
+      # Trigger a Navidrome rescan after uploads settle:
+      DIAPASON_NAVIDROME_URL: http://navidrome:4533
+      DIAPASON_NAVIDROME_USER: admin
+      DIAPASON_NAVIDROME_PASSWORD: "your-navidrome-password"
+      # For Plex instead, comment the three lines above and set:
+      # DIAPASON_PLEX_URL: http://plex:32400
+      # DIAPASON_PLEX_TOKEN: "xxxx"
+      # DIAPASON_PLEX_SECTION: "1"
+    volumes:
+      - ./music:/music:rw
+    depends_on:
+      - navidrome
