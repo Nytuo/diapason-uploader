@@ -22,13 +22,22 @@ services:
     build: .
     # image: ghcr.io/nytuo/diapason-uploader:latest   # once published
     restart: unless-stopped
-    ports:
-      # Bind to LAN only? map to "127.0.0.1:8688:8688" and put a reverse proxy in front.
-      - "8688:8688"
+    # host networking is required for mDNS auto-discovery (DIAPASON_MDNS_ENABLED):
+    # multicast doesn't traverse Docker's default bridge network, so devices on
+    # your LAN won't see the advertisement unless the container shares the host's
+    # network stack. Remove this and use `ports:` below instead if you don't need
+    # auto-discovery (the app still works with the address/token entered manually).
+    network_mode: host
+    # ports:
+    #   # Only used without network_mode: host. Bind to LAN only? map to
+    #   # "127.0.0.1:8688:8688" and put a reverse proxy in front.
+    #   - "8688:8688"
     environment:
       DIAPASON_MUSIC_DIR: /music
       DIAPASON_LISTEN_ADDR: 0.0.0.0:8688
-      DIAPASON_AUTH_TOKEN: "change-me-to-a-long-random-token"
+      # Leave DIAPASON_AUTH_TOKEN unset to have one generated and persisted
+      # automatically under DIAPASON_MUSIC_DIR on first run, or set your own:
+      # DIAPASON_AUTH_TOKEN: "change-me-to-a-long-random-token"
       # Trigger a Navidrome rescan after uploads settle:
       DIAPASON_NAVIDROME_URL: http://navidrome:4533
       DIAPASON_NAVIDROME_USER: admin

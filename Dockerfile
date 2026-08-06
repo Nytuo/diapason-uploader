@@ -1,11 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # ---- build ----
-FROM golang:1.22-alpine AS build
+FROM golang:1.25-alpine AS build
 WORKDIR /src
-COPY go.mod ./
-# No third-party deps: go.sum is not needed. Download is a no-op but keeps cache warm.
-RUN go mod download || true
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/diapason-uploader .
 

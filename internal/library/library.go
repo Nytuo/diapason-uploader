@@ -25,9 +25,9 @@ type Metadata struct {
 }
 
 type Result struct {
-	RelPath string `json:"path"`
-	Hash string `json:"hash"`
-	Duplicate bool `json:"duplicate"`
+	RelPath   string `json:"path"`
+	Hash      string `json:"hash"`
+	Duplicate bool   `json:"duplicate"`
 }
 
 type Library struct {
@@ -75,12 +75,12 @@ func (l *Library) Exists(hash string) (string, bool) {
 // the content hash while streaming; if the hash was already stored, it discards
 // the upload and returns Duplicate=true.
 func (l *Library) Store(meta Metadata, src io.Reader) (Result, error) {
-	ext := strings.ToLower(strings.TrimPrefix(meta.Ext, "."))
-	if ext == "" {
-		ext = "mp3"
-	}
+	ext := sanitizeExt(meta.Ext)
 	rel := l.relPath(meta, ext)
 	abs := filepath.Join(l.root, rel)
+	if err := l.assertWithinRoot(abs); err != nil {
+		return Result{}, err
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return Result{}, fmt.Errorf("mkdir: %w", err)
 	}
@@ -140,12 +140,43 @@ func (l *Library) relPath(m Metadata, ext string) string {
 	segs := strings.Split(p, "/")
 	for i, s := range segs {
 		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "- "))
-		if s == "" {
+		if s == "" || s == "." || s == ".." {
 			s = "_"
 		}
 		segs[i] = s
 	}
 	return filepath.Join(segs...)
+}
+
+// assertWithinRoot rejects any path that resolves outside the library root,
+// guarding against traversal via crafted metadata (e.g. "..").
+func (l *Library) assertWithinRoot(abs string) error {
+	root, err := filepath.Abs(l.root)
+	if err != nil {
+		return fmt.Errorf("resolve root: %w", err)
+	}
+	target, err := filepath.Abs(abs)
+	if err != nil {
+		return fmt.Errorf("resolve path: %w", err)
+	}
+	if target != root && !strings.HasPrefix(target, root+string(filepath.Separator)) {
+		return fmt.Errorf("refusing to write outside library root: %q", abs)
+	}
+	return nil
+}
+
+// sanitizeExt strips any path-unsafe content from the client-supplied file
+// extension, which is otherwise placed directly into the destination path.
+func sanitizeExt(ext string) string {
+	ext = strings.ToLower(strings.TrimPrefix(ext, "."))
+	if ext == "" {
+		return "mp3"
+	}
+	ext = strings.ReplaceAll(sanitize(ext), ".", "")
+	if ext == "" || ext == "_" {
+		return "mp3"
+	}
+	return ext
 }
 
 func (l *Library) loadIndex() {

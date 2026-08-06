@@ -1,6 +1,7 @@
 package library
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,6 +92,63 @@ func TestStoreAndDedup(t *testing.T) {
 	}
 	if _, ok := l.Exists("deadbeef"); ok {
 		t.Fatal("Exists should not find unknown hash")
+	}
+}
+
+func TestStoreRejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir, DefaultPathTemplate)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []Metadata{
+		{Artist: "..", Album: "..", Title: "pwned", Ext: "mp3"},
+		{Artist: "Artist", Album: "Album", Title: "Song", Ext: "../../../../etc/cron.d/x"},
+		{Artist: "..", Album: "etc", Title: "passwd", Ext: ""},
+	}
+	for _, meta := range cases {
+		// Either rejected outright, or neutralized into a safe path under root —
+		// what must never happen is a write outside dir (checked below).
+		if res, err := l.Store(meta, strings.NewReader("audio-bytes")); err == nil {
+			if _, statErr := os.Stat(filepath.Join(dir, res.RelPath)); statErr != nil {
+				t.Fatalf("stored file not found under root for %+v: %v", meta, statErr)
+			}
+		}
+	}
+
+	// Nothing should have escaped the temp dir root.
+	parent := filepath.Dir(dir)
+	entries, err := filepath.Glob(filepath.Join(parent, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e, "pwned") || strings.Contains(e, "passwd") {
+			t.Fatalf("traversal escaped root: %s", e)
+		}
+	}
+}
+
+func TestSanitizeExt(t *testing.T) {
+	exact := map[string]string{
+		"mp3":   "mp3",
+		".flac": "flac",
+		"":      "mp3",
+		"MP3":   "mp3",
+	}
+	for in, want := range exact {
+		if got := sanitizeExt(in); got != want {
+			t.Fatalf("sanitizeExt(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	unsafe := []string{"../../../etc/passwd", "m4a/../../etc", "..", "///", "..."}
+	for _, in := range unsafe {
+		got := sanitizeExt(in)
+		if got == "" || strings.Contains(got, "/") || strings.Contains(got, "..") {
+			t.Fatalf("sanitizeExt(%q) = %q, still unsafe", in, got)
+		}
 	}
 }
 

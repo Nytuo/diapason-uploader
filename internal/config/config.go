@@ -10,6 +10,8 @@ import (
 	"github.com/nytuo/diapason-uploader/internal/library"
 )
 
+const TokenFileName = ".diapason-uploader-token"
+
 // Config holds the runtime configuration for the uploader service.
 type Config struct {
 	// MusicDir is the root of the server's music library. Uploaded files are
@@ -23,18 +25,24 @@ type Config struct {
 	AuthToken string
 	// PathTemplate controls where files are placed under MusicDir. Supported
 	// placeholders: {artist} {album} {title} {track} {track2} {disc} {year} {ext}.
-	PathTemplate string
-	TLSCert string
-	TLSKey  string
+	PathTemplate   string
+	TLSCert        string
+	TLSKey         string
 	MaxUploadBytes int64
 
-	NavidromeURL      string
-	NavidromeUser     string
-	NavidromePassword string
-	PlexURL           string
-	PlexToken         string
-	PlexSection       string
+	NavidromeURL       string
+	NavidromeUser      string
+	NavidromePassword  string
+	PlexURL            string
+	PlexToken          string
+	PlexSection        string
 	RescanDebounceSecs int
+
+	// MDNSEnabled controls whether the service advertises itself on the LAN
+	// so Diapason clients can discover it automatically.
+	MDNSEnabled bool
+	// MDNSName is the mDNS instance name clients see when browsing.
+	MDNSName string
 }
 
 func Load() (*Config, error) {
@@ -53,6 +61,8 @@ func Load() (*Config, error) {
 		PlexToken:          env("DIAPASON_PLEX_TOKEN", ""),
 		PlexSection:        env("DIAPASON_PLEX_SECTION", ""),
 		RescanDebounceSecs: int(envInt64("DIAPASON_RESCAN_DEBOUNCE_SECS", 5)),
+		MDNSEnabled:        envBool("DIAPASON_MDNS_ENABLED", true),
+		MDNSName:           env("DIAPASON_MDNS_NAME", hostname()),
 	}
 
 	if c.MusicDir == "" {
@@ -83,4 +93,21 @@ func envInt64(key string, def int64) int64 {
 		}
 	}
 	return def
+}
+
+func envBool(key string, def bool) bool {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return def
+}
+
+func hostname() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "diapason-uploader"
+	}
+	return h
 }

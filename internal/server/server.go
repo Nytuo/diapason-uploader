@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/nytuo/diapason-uploader/internal/config"
 	"github.com/nytuo/diapason-uploader/internal/library"
@@ -19,10 +21,12 @@ type Server struct {
 	lib     *library.Library
 	rescan  *rescan.Trigger
 	maxSize int64
+
+	limiter *authLimiter
 }
 
 func New(cfg *config.Config, lib *library.Library, r *rescan.Trigger) *Server {
-	return &Server{cfg: cfg, lib: lib, rescan: r, maxSize: cfg.MaxUploadBytes}
+	return &Server{cfg: cfg, lib: lib, rescan: r, maxSize: cfg.MaxUploadBytes, limiter: newAuthLimiter()}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -102,15 +106,32 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.AuthToken != "" {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AuthToken)) != 1 {
-				writeErr(w, http.StatusUnauthorized, "invalid or missing token")
-				return
-			}
+		if s.cfg.AuthToken == "" {
+			next(w, r)
+			return
 		}
+		ip := clientIP(r)
+		if s.limiter.blocked(ip) {
+			writeErr(w, http.StatusTooManyRequests, "too many failed attempts, slow down")
+			return
+		}
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AuthToken)) != 1 {
+			s.limiter.fail(ip)
+			writeErr(w, http.StatusUnauthorized, "invalid or missing token")
+			return
+		}
+		s.limiter.reset(ip)
 		next(w, r)
 	}
+}
+
+func clientIP(r *http.Request) net.IP {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return net.ParseIP(host)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -125,7 +146,27 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 
 func logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s", r.Method, r.URL.Path)
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		log.Printf("%s %s %s %d %s", clientIPString(r), r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond))
 	})
+}
+
+func clientIPString(r *http.Request) string {
+	if ip := clientIP(r); ip != nil {
+		return ip.String()
+	}
+	return r.RemoteAddr
+}
+
+// statusWriter captures the response status code for logging.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
