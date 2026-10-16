@@ -1,0 +1,41 @@
+# Reach the uploader from anywhere over Tailscale — no open ports, no
+# certificates to manage. The tailnet already encrypts the traffic, so plain
+# HTTP inside it is fine (the app treats *.ts.net and 100.64.0.0/10 as private).
+#
+# 1. Create an auth key: https://login.tailscale.com/admin/settings/keys
+# 2. docker compose -f docker-compose.tailscale.yaml up -d
+# 3. In the app use  http://diapason-uploader.<your-tailnet>.ts.net:8688
+#    (or the 100.x address). Pairing works over the tailnet too.
+#
+# Want https:// on the tailnet instead? Run `tailscale serve --bg 8688` in the
+# tailscale container; then use the https://…ts.net URL the command prints.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: diapason-uploader
+    restart: unless-stopped
+    environment:
+      TS_AUTHKEY: "tskey-auth-xxxxxxxx"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+    cap_add: [NET_ADMIN, NET_RAW]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./data/tailscale:/var/lib/tailscale
+
+  diapason-uploader:
+    image: ghcr.io/nytuo/diapason-uploader:latest
+    restart: unless-stopped
+    network_mode: service:tailscale     # shares the tailscale container's network
+    environment:
+      DIAPASON_MUSIC_DIR: /music
+      DIAPASON_PLAIN_HTTP_OK: "true"    # the tailnet is the encryption
+      DIAPASON_MDNS_ENABLED: "false"    # multicast doesn't traverse a tailnet
+      # DIAPASON_PAIRING: window        # tailnet peers (100.64.0.0/10) can pair
+      # DIAPASON_YTDLP_ENABLED: "true"
+    volumes:
+      - ./music:/music:rw
+    depends_on:
+      - tailscale

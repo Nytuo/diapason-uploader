@@ -1,0 +1,109 @@
+# Every Diapason Uploader feature in one file, with Navidrome.
+# Uncomment what you need — each block says what it does and what it costs you.
+#
+#   cp docker-compose.full.yaml docker-compose.yaml && $EDITOR docker-compose.yaml
+#   docker compose up -d
+#
+# The uploader and Navidrome MUST mount the SAME music directory.
+
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    restart: unless-stopped
+    ports:
+      - "4533:4533"
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_LOGLEVEL: info
+    volumes:
+      - ./data/navidrome:/data
+      - ./music:/music:rw
+
+  diapason-uploader:
+    image: ghcr.io/nytuo/diapason-uploader:latest
+    # build: ../                        # or build from this repository
+    restart: unless-stopped
+
+    # ---- networking ----------------------------------------------------------
+    # mDNS auto-discovery (the app finds the server by itself) needs the host
+    # network: multicast doesn't cross Docker's default bridge. If you use it,
+    # delete `ports:` below.
+    network_mode: host
+    # ports:                             # without host networking: manual address only
+    #   - "8688:8688"                    #   (bind "127.0.0.1:8688:8688" behind a reverse proxy)
+
+    environment:
+      # ---- library ------------------------------------------------------------
+      DIAPASON_MUSIC_DIR: /music
+      # Where uploads are placed. Placeholders: {artist} {album} {title} {track}
+      # {track2} {disc} {year} {ext}
+      # DIAPASON_PATH_TEMPLATE: "{artist}/{album}/{track2} - {title}.{ext}"
+      # DIAPASON_MAX_UPLOAD_BYTES: "536870912"      # 512 MiB; 0 = unlimited
+
+      # ---- listening ----------------------------------------------------------
+      DIAPASON_LISTEN_ADDR: 0.0.0.0:8688
+      # Plain HTTP is fine on a LAN or inside a VPN/tunnel you trust. Say so to
+      # silence the start-up warning (the app has a matching switch):
+      DIAPASON_PLAIN_HTTP_OK: "true"
+
+      # ---- auth ---------------------------------------------------------------
+      # Leave unset: a strong master token is generated once and stored in
+      # DIAPASON_STATE_DIR/.diapason-uploader-token (mode 0600).
+      # Or set your own (>= 24 chars, e.g. `openssl rand -hex 24`):
+      # DIAPASON_AUTH_TOKEN: "change-me-to-a-long-random-token"
+      # Keep the token and paired-device files out of the music share:
+      # DIAPASON_STATE_DIR: /state            # and mount a volume there
+
+      # ---- one-tap pairing ----------------------------------------------------
+      # Apps pair themselves with their own revocable token — nothing secret is
+      # ever broadcast.
+      #   window (default): open 15 min after first start, then only when an
+      #                     already-paired app reopens it ("Allow another device")
+      #   open            : always available to the local network
+      #   off             : paste the token by hand
+      # DIAPASON_PAIRING: window
+      # DIAPASON_PAIRING_WINDOW_MINUTES: "15"
+      # Pairing refuses requests relayed by a proxy or from the internet. Only
+      # change this if you really want that:
+      # DIAPASON_PAIRING_ALLOW_PUBLIC: "false"
+
+      # ---- discovery ----------------------------------------------------------
+      # DIAPASON_MDNS_ENABLED: "true"         # needs network_mode: host
+      # DIAPASON_MDNS_NAME: my-nas
+
+      # ---- HTTPS --------------------------------------------------------------
+      # Either terminate TLS here (mount the certs) …
+      # DIAPASON_TLS_CERT: /certs/fullchain.pem
+      # DIAPASON_TLS_KEY: /certs/privkey.pem
+      # … or use a reverse proxy (see docker-compose.caddy.yaml) and tell the
+      # uploader which proxies to believe, so rate limiting is per real client:
+      # DIAPASON_TRUSTED_PROXIES: "172.18.0.0/16"
+
+      # ---- rescan after uploads ----------------------------------------------
+      DIAPASON_NAVIDROME_URL: http://localhost:4533
+      DIAPASON_NAVIDROME_USER: admin
+      DIAPASON_NAVIDROME_PASSWORD: "your-navidrome-password"
+      # DIAPASON_RESCAN_DEBOUNCE_SECS: "5"
+      # For Plex see docker-compose.plex.yaml.
+
+      # ---- yt-dlp proxy (optional) -------------------------------------------
+      # The server — not the phone — searches, streams and downloads YouTube.
+      # yt-dlp updates itself, so YouTube changes never need an app release.
+      # DIAPASON_YTDLP_ENABLED: "true"
+      # DIAPASON_YTDLP_AUTO_UPDATE: "true"
+      # DIAPASON_YTDLP_UPDATE_INTERVAL_HOURS: "24"
+      # DIAPASON_YTDLP_MAX_DURATION_SECS: "3600"      # refuse videos longer than this
+      # DIAPASON_YTDLP_MAX_FILE_BYTES: "268435456"    # 256 MiB per download
+      # DIAPASON_YTDLP_MAX_CONCURRENT: "2"
+      # JavaScript runtime yt-dlp needs for YouTube (the image ships Node):
+      # DIAPASON_YTDLP_JS_RUNTIME: auto      # auto | deno | node | bun | quickjs | none
+      # Hide the server's IP from YouTube (see docker-compose.ytdlp-vpn.yaml):
+      # DIAPASON_YTDLP_PROXY: "socks5://vpn:1080"
+      # Playlist behind the "Hits on YouTube" shelf:
+      # DIAPASON_YTDLP_TRENDING_URL: "https://www.youtube.com/playlist?list=PL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i"
+    volumes:
+      - ./music:/music:rw
+      # - ./state:/state                # if DIAPASON_STATE_DIR=/state
+      # - ./certs:/certs:ro             # if serving TLS directly
+    depends_on:
+      - navidrome

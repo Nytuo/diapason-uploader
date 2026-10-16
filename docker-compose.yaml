@@ -1,3 +1,6 @@
+# Quick-start example. More scenarios (Plex, HTTPS with Caddy, Tailscale,
+# Cloudflare Tunnel, yt-dlp over a VPN, every option documented) are in ./examples.
+
 # Example: run the Diapason Uploader next to Navidrome, sharing the music volume.
 #
 #   docker compose up -d
@@ -35,9 +38,14 @@ services:
     environment:
       DIAPASON_MUSIC_DIR: /music
       DIAPASON_LISTEN_ADDR: 0.0.0.0:8688
+      DIAPASON_PLAIN_HTTP_OK: "true"   # LAN/VPN only; use HTTPS (see examples/) for the internet
       # Leave DIAPASON_AUTH_TOKEN unset to have one generated and persisted
       # automatically under DIAPASON_MUSIC_DIR on first run, or set your own:
       # DIAPASON_AUTH_TOKEN: "change-me-to-a-long-random-token"
+      # Optional: turn this sidecar into a yt-dlp proxy. The app then searches,
+      # streams and downloads YouTube *through* this server (so its IP, not the
+      # phone's, talks to YouTube) and yt-dlp self-updates daily.
+      # DIAPASON_YTDLP_ENABLED: "true"
       # Trigger a Navidrome rescan after uploads settle:
       DIAPASON_NAVIDROME_URL: http://navidrome:4533
       DIAPASON_NAVIDROME_USER: admin

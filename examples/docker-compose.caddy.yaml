@@ -1,0 +1,64 @@
+# Internet access with automatic HTTPS (Let's Encrypt) via Caddy.
+#
+# Prerequisites: a DNS name pointing at this host, ports 80/443 forwarded.
+#
+# Caddyfile (save next to this file):
+#
+#   music-upload.example.com {
+#       # Large uploads over slow links: don't buffer or time out early.
+#       reverse_proxy diapason-uploader:8688 {
+#           flush_interval -1
+#           transport http {
+#               read_timeout 30m
+#               write_timeout 30m
+#           }
+#       }
+#   }
+#
+# In the app: address https://music-upload.example.com, policy "Anywhere".
+#
+# Pairing: requests relayed by a proxy are refused on purpose (the server can't
+# tell a LAN phone from the internet). Pair once on your home Wi-Fi against
+# http://<server-lan-ip>:8688 (uncomment `ports:` below), or copy the token from
+# the logs / DIAPASON_AUTH_TOKEN into the app by hand.
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge]
+
+  diapason-uploader:
+    image: ghcr.io/nytuo/diapason-uploader:latest
+    restart: unless-stopped
+    networks: [edge]
+    # ports:                            # LAN-only direct port, for first pairing
+    #   - "127.0.0.1:8688:8688"         #   (or "<lan-ip>:8688:8688")
+    environment:
+      DIAPASON_MUSIC_DIR: /music
+      DIAPASON_MDNS_ENABLED: "false"    # bridge network: multicast can't leave anyway
+      DIAPASON_AUTH_TOKEN: "replace-with-openssl-rand-hex-24-output"
+      DIAPASON_TRUSTED_PROXIES: "172.16.0.0/12"   # the docker network Caddy lives on
+      DIAPASON_PAIRING: "off"           # tokens are entered by hand over the internet
+      DIAPASON_PLAIN_HTTP_OK: "true"    # TLS is Caddy's job; this hop is internal
+      # DIAPASON_NAVIDROME_URL: http://navidrome:4533
+      # DIAPASON_NAVIDROME_USER: admin
+      # DIAPASON_NAVIDROME_PASSWORD: "..."
+      # DIAPASON_YTDLP_ENABLED: "true"
+    volumes:
+      - ./music:/music:rw
+
+networks:
+  edge:
+
+volumes:
+  caddy_data:
+  caddy_config:

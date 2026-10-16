@@ -21,7 +21,7 @@ type Metadata struct {
 	TrackNumber int    `json:"trackNumber"`
 	DiscNumber  int    `json:"discNumber"`
 	Year        int    `json:"year"`
-	Ext         string `json:"ext"` // e.g. "mp3", "m4a", "opus" (no dot)
+	Ext         string `json:"ext"`
 }
 
 type Result struct {
@@ -33,6 +33,8 @@ type Result struct {
 type Library struct {
 	root     string
 	template string
+
+	placeMu sync.Mutex
 
 	mu    sync.Mutex
 	index map[string]string
@@ -49,6 +51,7 @@ func Open(dir, template string) (*Library, error) {
 		return nil, fmt.Errorf("create music dir: %w", err)
 	}
 	l := &Library{root: dir, template: template, index: map[string]string{}}
+	_ = os.RemoveAll(filepath.Join(dir, IncomingDir))
 	l.loadIndex()
 	return l, nil
 }
@@ -71,9 +74,11 @@ func (l *Library) Exists(hash string) (string, bool) {
 	return "", false
 }
 
-// Store streams src into the library at a path derived from meta. It computes
-// the content hash while streaming; if the hash was already stored, it discards
-// the upload and returns Duplicate=true.
+// IncomingDir is the uploader-owned scratch directory (inside the library root,
+// so a final rename stays on one filesystem) where uploads are staged.
+const IncomingDir = ".diapason-uploader-incoming"
+
+// Store streams src into the library at a path derived from meta.
 func (l *Library) Store(meta Metadata, src io.Reader) (Result, error) {
 	ext := sanitizeExt(meta.Ext)
 	rel := l.relPath(meta, ext)
@@ -81,11 +86,12 @@ func (l *Library) Store(meta Metadata, src io.Reader) (Result, error) {
 	if err := l.assertWithinRoot(abs); err != nil {
 		return Result{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return Result{}, fmt.Errorf("mkdir: %w", err)
-	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(abs), ".upload-*")
+	incoming := filepath.Join(l.root, IncomingDir)
+	if err := os.MkdirAll(incoming, 0o755); err != nil {
+		return Result{}, fmt.Errorf("create staging dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(incoming, "upload-*")
 	if err != nil {
 		return Result{}, fmt.Errorf("temp file: %w", err)
 	}
@@ -102,13 +108,19 @@ func (l *Library) Store(meta Metadata, src io.Reader) (Result, error) {
 	}
 	hash := hex.EncodeToString(h.Sum(nil))
 
+	l.placeMu.Lock()
+	defer l.placeMu.Unlock()
+
 	if existing, ok := l.Exists(hash); ok {
 		return Result{RelPath: existing, Hash: hash, Duplicate: true}, nil
 	}
 
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return Result{}, fmt.Errorf("mkdir: %w", err)
+	}
 	abs = uniquePath(abs)
 	rel, _ = filepath.Rel(l.root, abs)
-	if err := os.Rename(tmpName, abs); err != nil {
+	if err := moveNew(tmpName, abs); err != nil {
 		return Result{}, fmt.Errorf("move into place: %w", err)
 	}
 
@@ -118,6 +130,29 @@ func (l *Library) Store(meta Metadata, src io.Reader) (Result, error) {
 	l.saveIndex()
 
 	return Result{RelPath: rel, Hash: hash}, nil
+}
+
+func moveNew(src, dst string) error {
+	if err := os.Link(src, dst); err == nil {
+		return os.Remove(src)
+	} else if os.IsExist(err) {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	return out.Close()
 }
 
 func (l *Library) relPath(m Metadata, ext string) string {
@@ -254,4 +289,28 @@ func itoaOrEmpty(n int) string {
 		return ""
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+var audioExts = map[string]bool{
+	"mp3": true, "m4a": true, "aac": true, "flac": true, "ogg": true, "oga": true,
+	"opus": true, "wav": true, "wma": true, "aiff": true, "aif": true, "alac": true,
+	"webm": true, "mka": true, "mp4": true, "wv": true, "ape": true,
+}
+
+func AllowedExt(ext string) bool {
+	ext = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ext), "."))
+	return ext == "" || audioExts[ext]
+}
+
+// ValidHash reports whether h looks like a hex SHA-256 digest.
+func ValidHash(h string) bool {
+	if len(h) != 64 {
+		return false
+	}
+	for _, c := range h {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
 }

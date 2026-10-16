@@ -1,0 +1,33 @@
+# Internet access through a Cloudflare Tunnel: no inbound ports; Cloudflare
+# terminates HTTPS for you.
+#
+# 1. Zero Trust dashboard → Networks → Tunnels → create one, copy its token.
+# 2. Add a public hostname: music-upload.example.com → http://diapason-uploader:8688
+# 3. In the app use https://music-upload.example.com with policy "Anywhere".
+#
+# Cloudflare's free plan caps request bodies at 100 MB; bigger files fail there.
+# For FLAC-heavy libraries prefer Tailscale or Caddy.
+#
+# Pairing is refused through a tunnel (it can't prove you're on the LAN), so
+# paste the token from DIAPASON_AUTH_TOKEN into the app.
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "your-tunnel-token"
+
+  diapason-uploader:
+    image: ghcr.io/nytuo/diapason-uploader:latest
+    restart: unless-stopped
+    environment:
+      DIAPASON_MUSIC_DIR: /music
+      DIAPASON_AUTH_TOKEN: "replace-with-openssl-rand-hex-24-output"
+      DIAPASON_TRUSTED_PROXIES: "172.16.0.0/12"   # so rate limiting sees real clients
+      DIAPASON_PAIRING: "off"
+      DIAPASON_PLAIN_HTTP_OK: "true"
+      DIAPASON_MDNS_ENABLED: "false"
+    volumes:
+      - ./music:/music:rw

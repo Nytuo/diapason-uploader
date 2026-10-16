@@ -3,9 +3,13 @@ package config
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nytuo/diapason-uploader/internal/library"
 )
@@ -42,8 +46,37 @@ type Config struct {
 	// so Diapason clients can discover it automatically.
 	MDNSEnabled bool
 	// MDNSName is the mDNS instance name clients see when browsing.
-	MDNSName string
+	MDNSName       string
+	StateDir       string
+	Pairing        string
+	PairingWindow  time.Duration
+	PairingPublic  bool
+	PlainHTTPOK    bool
+	TrustedProxies []*net.IPNet
+	WorkDir        string
+
+	YtDlp YtDlp
 }
+
+// YtDlp configures the optional yt-dlp proxy feature.
+type YtDlp struct {
+	Enabled         bool
+	Bin             string
+	AutoUpdate      bool
+	UpdateInterval  time.Duration
+	MaxDurationSecs int
+	MaxFileBytes    int64
+	MaxConcurrent   int
+	OutboundProxy   string
+	JSRuntime       string
+	TrendingURL     string
+}
+
+// DefaultTrendingURL is YouTube's "Top 100 Music Videos Global" chart playlist.
+const DefaultTrendingURL = "https://www.youtube.com/playlist?list=PL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i"
+
+// MinTokenLength is the shortest user-supplied auth token accepted.
+const MinTokenLength = 24
 
 func Load() (*Config, error) {
 	c := &Config{
@@ -63,6 +96,49 @@ func Load() (*Config, error) {
 		RescanDebounceSecs: int(envInt64("DIAPASON_RESCAN_DEBOUNCE_SECS", 5)),
 		MDNSEnabled:        envBool("DIAPASON_MDNS_ENABLED", true),
 		MDNSName:           env("DIAPASON_MDNS_NAME", hostname()),
+		WorkDir:            env("DIAPASON_WORK_DIR", filepath.Join(os.TempDir(), "diapason-uploader")),
+		StateDir:           env("DIAPASON_STATE_DIR", ""),
+		Pairing:            strings.ToLower(env("DIAPASON_PAIRING", "window")),
+		PairingWindow:      time.Duration(envInt64("DIAPASON_PAIRING_WINDOW_MINUTES", 15)) * time.Minute,
+		PairingPublic:      envBool("DIAPASON_PAIRING_ALLOW_PUBLIC", false),
+		PlainHTTPOK:        envBool("DIAPASON_PLAIN_HTTP_OK", false),
+		YtDlp: YtDlp{
+			Enabled:         envBool("DIAPASON_YTDLP_ENABLED", false),
+			Bin:             env("DIAPASON_YTDLP_BIN", "yt-dlp"),
+			AutoUpdate:      envBool("DIAPASON_YTDLP_AUTO_UPDATE", true),
+			UpdateInterval:  time.Duration(envInt64("DIAPASON_YTDLP_UPDATE_INTERVAL_HOURS", 24)) * time.Hour,
+			MaxDurationSecs: int(envInt64("DIAPASON_YTDLP_MAX_DURATION_SECS", 3600)),
+			MaxFileBytes:    envInt64("DIAPASON_YTDLP_MAX_FILE_BYTES", 256<<20),
+			MaxConcurrent:   int(envInt64("DIAPASON_YTDLP_MAX_CONCURRENT", 2)),
+			OutboundProxy:   env("DIAPASON_YTDLP_PROXY", ""),
+			JSRuntime:       strings.ToLower(env("DIAPASON_YTDLP_JS_RUNTIME", "auto")),
+			TrendingURL:     env("DIAPASON_YTDLP_TRENDING_URL", DefaultTrendingURL),
+		},
+	}
+
+	if c.StateDir == "" {
+		c.StateDir = c.MusicDir
+	}
+	switch c.Pairing {
+	case "off", "window", "open":
+	default:
+		return nil, fmt.Errorf("DIAPASON_PAIRING must be off, window or open (got %q)", c.Pairing)
+	}
+	if c.PairingWindow < time.Minute {
+		c.PairingWindow = time.Minute
+	}
+
+	proxies, err := parseCIDRs(env("DIAPASON_TRUSTED_PROXIES", ""))
+	if err != nil {
+		return nil, err
+	}
+	c.TrustedProxies = proxies
+
+	if c.AuthToken != "" && len(c.AuthToken) < MinTokenLength {
+		return nil, fmt.Errorf("DIAPASON_AUTH_TOKEN must be at least %d characters (try `openssl rand -hex 24`)", MinTokenLength)
+	}
+	if c.YtDlp.MaxConcurrent < 1 {
+		c.YtDlp.MaxConcurrent = 1
 	}
 
 	if c.MusicDir == "" {
@@ -110,4 +186,32 @@ func hostname() string {
 		return "diapason-uploader"
 	}
 	return h
+}
+
+// parseCIDRs parses a comma-separated list of CIDRs or bare IPs.
+func parseCIDRs(list string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, part := range strings.Split(list, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !strings.Contains(part, "/") {
+			ip := net.ParseIP(part)
+			if ip == nil {
+				return nil, fmt.Errorf("DIAPASON_TRUSTED_PROXIES: invalid address %q", part)
+			}
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			part = fmt.Sprintf("%s/%d", ip, bits)
+		}
+		_, n, err := net.ParseCIDR(part)
+		if err != nil {
+			return nil, fmt.Errorf("DIAPASON_TRUSTED_PROXIES: %w", err)
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }

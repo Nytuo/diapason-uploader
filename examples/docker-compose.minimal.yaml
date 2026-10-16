@@ -1,0 +1,20 @@
+# Smallest useful setup: the uploader next to an existing music server.
+# The uploader and your music server MUST mount the same directory.
+#
+#   docker compose -f docker-compose.minimal.yaml up -d
+#   docker compose -f docker-compose.minimal.yaml logs diapason-uploader   # first-run hints
+#
+# Open the Diapason app on the same Wi-Fi: Settings → Uploader → "Pair".
+# (Pairing is open for 15 minutes after the first start, local network only.)
+
+services:
+  diapason-uploader:
+    image: ghcr.io/nytuo/diapason-uploader:latest
+    restart: unless-stopped
+    ports:
+      - "8688:8688"
+    environment:
+      DIAPASON_MUSIC_DIR: /music
+      DIAPASON_PLAIN_HTTP_OK: "true"   # LAN only: skip the plain-HTTP warning
+    volumes:
+      - /srv/music:/music:rw           # <- the folder your music server scans

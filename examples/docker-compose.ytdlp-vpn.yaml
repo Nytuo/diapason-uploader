@@ -1,0 +1,34 @@
+# yt-dlp proxy whose YouTube traffic leaves through a VPN, so your home IP never
+# talks to YouTube. Uses gluetun's built-in HTTP proxy (port 8888).
+#
+# Choose your provider: https://github.com/qdm12/gluetun-wiki
+
+services:
+  vpn:
+    image: qmcgaw/gluetun:latest
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      VPN_SERVICE_PROVIDER: mullvad
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: "your-key"
+      WIREGUARD_ADDRESSES: "10.64.0.2/32"
+      HTTPPROXY: "on"                    # listens on :8888 inside the compose network
+
+  diapason-uploader:
+    image: ghcr.io/nytuo/diapason-uploader:latest
+    restart: unless-stopped
+    ports:
+      - "8688:8688"
+    environment:
+      DIAPASON_MUSIC_DIR: /music
+      DIAPASON_PLAIN_HTTP_OK: "true"
+      DIAPASON_YTDLP_ENABLED: "true"
+      DIAPASON_YTDLP_PROXY: "http://vpn:8888"   # only yt-dlp uses it; uploads stay direct
+      DIAPASON_YTDLP_AUTO_UPDATE: "true"
+    volumes:
+      - ./music:/music:rw
+    depends_on:
+      - vpn

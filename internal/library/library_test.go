@@ -108,8 +108,6 @@ func TestStoreRejectsPathTraversal(t *testing.T) {
 		{Artist: "..", Album: "etc", Title: "passwd", Ext: ""},
 	}
 	for _, meta := range cases {
-		// Either rejected outright, or neutralized into a safe path under root —
-		// what must never happen is a write outside dir (checked below).
 		if res, err := l.Store(meta, strings.NewReader("audio-bytes")); err == nil {
 			if _, statErr := os.Stat(filepath.Join(dir, res.RelPath)); statErr != nil {
 				t.Fatalf("stored file not found under root for %+v: %v", meta, statErr)
@@ -156,5 +154,84 @@ func TestExistsEmptyHash(t *testing.T) {
 	l := &Library{index: map[string]string{}}
 	if _, ok := l.Exists(""); ok {
 		t.Fatal("empty hash must not exist")
+	}
+}
+
+func TestDuplicateNeverTouchesLibrary(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir, DefaultPathTemplate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := Metadata{Artist: "A", Album: "B", Title: "C", Ext: "mp3"}
+	r1, err := l.Store(meta, strings.NewReader("original"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(dir, r1.RelPath)
+	before, _ := os.Stat(existing)
+
+	snapshot := func() map[string]bool {
+		out := map[string]bool{}
+		_ = filepath.Walk(dir, func(p string, info os.FileInfo, _ error) error {
+			if rel, _ := filepath.Rel(dir, p); !strings.HasPrefix(rel, IncomingDir) {
+				out[rel] = true
+			}
+			return nil
+		})
+		return out
+	}
+	tree := snapshot()
+
+	// Same bytes, but different metadata that would map to a brand new folder.
+	other := Metadata{Artist: "Someone Else", Album: "Elsewhere", Title: "Copy", Ext: "mp3"}
+	r2, err := l.Store(other, strings.NewReader("original"))
+	if err != nil || !r2.Duplicate || r2.RelPath != r1.RelPath {
+		t.Fatalf("expected duplicate pointing at the existing file, got %+v err=%v", r2, err)
+	}
+
+	after, err := os.Stat(existing)
+	if err != nil {
+		t.Fatal("existing file vanished")
+	}
+	if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
+		t.Fatal("existing file was modified")
+	}
+	if data, _ := os.ReadFile(existing); string(data) != "original" {
+		t.Fatal("existing file content changed")
+	}
+	now := snapshot()
+	for p := range now {
+		if !tree[p] {
+			t.Fatalf("duplicate upload created %q in the library", p)
+		}
+	}
+	for p := range tree {
+		if !now[p] {
+			t.Fatalf("duplicate upload removed %q from the library", p)
+		}
+	}
+	if left, _ := os.ReadDir(filepath.Join(dir, IncomingDir)); len(left) != 0 {
+		t.Fatalf("staged copy not cleaned up: %v", left)
+	}
+}
+
+func TestNewFileNeverOverwritesExisting(t *testing.T) {
+	dir := t.TempDir()
+	l, _ := Open(dir, DefaultPathTemplate)
+	meta := Metadata{Artist: "A", Album: "B", Title: "C", Ext: "mp3"}
+	target := filepath.Join(dir, "A", "B", "C.mp3")
+	_ = os.MkdirAll(filepath.Dir(target), 0o755)
+	_ = os.WriteFile(target, []byte("hand-placed"), 0o644)
+
+	r, err := l.Store(meta, strings.NewReader("new"))
+	if err != nil || r.Duplicate {
+		t.Fatalf("store: %+v %v", r, err)
+	}
+	if data, _ := os.ReadFile(target); string(data) != "hand-placed" {
+		t.Fatal("pre-existing library file was overwritten")
+	}
+	if r.RelPath == filepath.Join("A", "B", "C.mp3") {
+		t.Fatal("new file reused the occupied path")
 	}
 }
