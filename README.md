@@ -60,6 +60,7 @@ A single static binary (`CGO_ENABLED=0`), no runtime dependencies.
 | `DIAPASON_PAIRING_WINDOW_MINUTES` | `15` | How long the pairing window stays open. |
 | `DIAPASON_PAIRING_ALLOW_PUBLIC` | `false` | Also allow pairing from non-private addresses / via proxies (not advised). |
 | `DIAPASON_STATE_DIR` | `DIAPASON_MUSIC_DIR` | Where the master token and paired-device list live. |
+| `DIAPASON_PUBLIC_URL` | *(empty)* | Address to reach this server from outside your LAN (reverse proxy, Tailscale name…). Paired apps use it automatically when the `.local` address isn't reachable. |
 | `DIAPASON_PLAIN_HTTP_OK` | `false` | Silence the plain-HTTP warning when your network is already secure (LAN, Tailscale, WireGuard, tunnel). |
 | `DIAPASON_WORK_DIR` | `$TMPDIR/diapason-uploader` | Scratch space for yt-dlp (kept outside the music dir). |
 | `DIAPASON_YTDLP_ENABLED` | `false` | Enable the [yt-dlp proxy](#yt-dlp-proxy-optional). |
@@ -69,7 +70,8 @@ A single static binary (`CGO_ENABLED=0`), no runtime dependencies.
 | `DIAPASON_YTDLP_UPDATE_INTERVAL_HOURS` | `24` | Self-update period. |
 | `DIAPASON_YTDLP_MAX_DURATION_SECS` | `3600` | Refuse downloads of longer videos (`0` = no limit). |
 | `DIAPASON_YTDLP_MAX_FILE_BYTES` | `268435456` | Per-download size cap. |
-| `DIAPASON_YTDLP_MAX_CONCURRENT` | `2` | Simultaneous yt-dlp processes. |
+| `DIAPASON_YTDLP_MAX_CONCURRENT` | `2` | Simultaneous yt-dlp processes **per paired device**: each device runs its own, so several devices never queue behind each other. |
+| `DIAPASON_YTDLP_MAX_TOTAL` | `16` | Ceiling on yt-dlp processes across all devices. |
 | `DIAPASON_YTDLP_PROXY` | *(empty)* | Route all yt-dlp traffic via this proxy (e.g. `socks5://vpn:1080`). |
 | `DIAPASON_YTDLP_TRENDING_URL` | YouTube Top 100 Music (global) | Playlist behind the "Popular on YouTube" feed. |
 

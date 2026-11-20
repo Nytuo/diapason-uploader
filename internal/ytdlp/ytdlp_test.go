@@ -1,6 +1,12 @@
 package ytdlp
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/nytuo/diapason-uploader/internal/config"
+)
 
 func TestParseTarget(t *testing.T) {
 	good := map[string]string{
@@ -68,5 +74,36 @@ func TestClassifyExplainsWhatFailed(t *testing.T) {
 		if got.Msg == "" || got.Detail == "" {
 			t.Errorf("classify(%q) lost its message or detail: %+v", stderr, got)
 		}
+	}
+}
+
+func TestSlotsArePerDevice(t *testing.T) {
+	m := &Manager{
+		cfg:    config.YtDlp{MaxConcurrent: 1},
+		sem:    make(chan struct{}, 4),
+		owners: map[string]chan struct{}{},
+	}
+	a := WithOwner(context.Background(), "phone")
+	b := WithOwner(context.Background(), "laptop")
+
+	releaseA, err := m.acquire(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The phone is at its limit, but the laptop still gets its own instance.
+	releaseB, err := m.acquire(b)
+	if err != nil {
+		t.Fatalf("a second device must not wait for the first: %v", err)
+	}
+	// A second request from the phone waits for its own slot.
+	ctx, cancel := context.WithTimeout(a, 50*time.Millisecond)
+	defer cancel()
+	if _, err := m.acquire(ctx); err != ErrBusy {
+		t.Fatalf("same device over its limit should be busy, got %v", err)
+	}
+	releaseA()
+	releaseB()
+	if _, err := m.acquire(a); err != nil {
+		t.Fatalf("slot should be free again: %v", err)
 	}
 }

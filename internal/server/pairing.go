@@ -105,7 +105,11 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("paired device %q (id %s)", dev.Name, dev.ID)
-	writeJSON(w, http.StatusCreated, map[string]string{"token": token, "deviceId": dev.ID, "name": dev.Name})
+	resp := map[string]string{"token": token, "deviceId": dev.ID, "name": dev.Name}
+	if s.cfg.PublicURL != "" {
+		resp["publicUrl"] = s.cfg.PublicURL
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // handlePairOpen lets an authenticated device open the window for another one.

@@ -115,6 +115,9 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 		"ytdlp":   s.yt != nil,
 		"pairing": s.cfg.Pairing != "off",
 	}
+	if s.cfg.PublicURL != "" {
+		caps["publicUrl"] = s.cfg.PublicURL
+	}
 	if s.yt != nil {
 		caps["ytdlpVersion"] = s.yt.Version()
 		caps["ytdlpTagging"] = s.yt.HasFFmpeg()
@@ -232,8 +235,11 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		got, ok := bearer(r.Header.Get("Authorization"))
 		digest := sha256.Sum256([]byte(got))
 		authorized := ok && subtle.ConstantTimeCompare(digest[:], s.tokenDigest[:]) == 1
+		who := "master"
 		if ok && !authorized {
-			_, authorized = s.devices.Verify(got)
+			var dev devices.View
+			dev, authorized = s.devices.Verify(got)
+			who = dev.ID
 		}
 		if !authorized {
 			s.limiter.fail(ip)
@@ -241,7 +247,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		s.limiter.reset(ip)
-		next(w, r)
+		next(w, r.WithContext(ytdlp.WithOwner(r.Context(), who)))
 	}
 }
 

@@ -72,7 +72,7 @@ func classify(stderr string) *Error {
 		return mk(KindBlocked, "YouTube is asking this server to prove it isn't a bot. Try again later, or route yt-dlp through a different network (DIAPASON_YTDLP_PROXY).")
 	case has("http error 429", "too many requests", "rate-limit", "rate limit"):
 		return mk(KindRateLimited, "YouTube is rate-limiting this server. Wait a few minutes and try again.")
-	case has("private video", "video unavailable", "this video is not available", "has been removed", "no longer available",
+	case has("private video", "video unavailable", "video is unavailable", "this video is not available", "has been removed", "no longer available",
 		"not available in your country", "blocked it in your country", "copyright", "members-only", "join this channel", "terminated"):
 		return mk(KindUnavailable, "YouTube says this video isn't available (private, removed or blocked in the server's country).")
 	case has("javascript runtime", "js runtime", "no supported javascript", "challenge solving failed", "n challenge"):

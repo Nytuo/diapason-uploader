@@ -46,11 +46,14 @@ type Config struct {
 	// so Diapason clients can discover it automatically.
 	MDNSEnabled bool
 	// MDNSName is the mDNS instance name clients see when browsing.
-	MDNSName       string
-	StateDir       string
-	Pairing        string
-	PairingWindow  time.Duration
-	PairingPublic  bool
+	MDNSName      string
+	StateDir      string
+	Pairing       string
+	PairingWindow time.Duration
+	PairingPublic bool
+	// PublicURL is the address clients should use away from the LAN (reverse
+	// proxy, Tailscale name…). Handed to paired apps so they can fall back to it.
+	PublicURL      string
 	PlainHTTPOK    bool
 	TrustedProxies []*net.IPNet
 	WorkDir        string
@@ -66,7 +69,8 @@ type YtDlp struct {
 	UpdateInterval  time.Duration
 	MaxDurationSecs int
 	MaxFileBytes    int64
-	MaxConcurrent   int
+	MaxConcurrent   int // simultaneous yt-dlp processes per paired device
+	MaxTotal        int // ceiling across all devices
 	OutboundProxy   string
 	JSRuntime       string
 	TrendingURL     string
@@ -101,6 +105,7 @@ func Load() (*Config, error) {
 		Pairing:            strings.ToLower(env("DIAPASON_PAIRING", "window")),
 		PairingWindow:      time.Duration(envInt64("DIAPASON_PAIRING_WINDOW_MINUTES", 15)) * time.Minute,
 		PairingPublic:      envBool("DIAPASON_PAIRING_ALLOW_PUBLIC", false),
+		PublicURL:          strings.TrimRight(strings.TrimSpace(env("DIAPASON_PUBLIC_URL", "")), "/"),
 		PlainHTTPOK:        envBool("DIAPASON_PLAIN_HTTP_OK", false),
 		YtDlp: YtDlp{
 			Enabled:         envBool("DIAPASON_YTDLP_ENABLED", false),
@@ -110,6 +115,7 @@ func Load() (*Config, error) {
 			MaxDurationSecs: int(envInt64("DIAPASON_YTDLP_MAX_DURATION_SECS", 3600)),
 			MaxFileBytes:    envInt64("DIAPASON_YTDLP_MAX_FILE_BYTES", 256<<20),
 			MaxConcurrent:   int(envInt64("DIAPASON_YTDLP_MAX_CONCURRENT", 2)),
+			MaxTotal:        int(envInt64("DIAPASON_YTDLP_MAX_TOTAL", 16)),
 			OutboundProxy:   env("DIAPASON_YTDLP_PROXY", ""),
 			JSRuntime:       strings.ToLower(env("DIAPASON_YTDLP_JS_RUNTIME", "auto")),
 			TrendingURL:     env("DIAPASON_YTDLP_TRENDING_URL", DefaultTrendingURL),
@@ -136,6 +142,9 @@ func Load() (*Config, error) {
 
 	if c.AuthToken != "" && len(c.AuthToken) < MinTokenLength {
 		return nil, fmt.Errorf("DIAPASON_AUTH_TOKEN must be at least %d characters (try `openssl rand -hex 24`)", MinTokenLength)
+	}
+	if c.YtDlp.MaxTotal < c.YtDlp.MaxConcurrent {
+		c.YtDlp.MaxTotal = c.YtDlp.MaxConcurrent
 	}
 	if c.YtDlp.MaxConcurrent < 1 {
 		c.YtDlp.MaxConcurrent = 1

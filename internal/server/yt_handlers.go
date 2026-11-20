@@ -137,7 +137,7 @@ func (s *Server) handleYtDownload(w http.ResponseWriter, r *http.Request) {
 	job, fresh := s.jobs.start(id)
 	if fresh {
 		ov := override{Artist: clean(req.Artist), Album: clean(req.Album), Title: clean(req.Title)}
-		go s.runDownload(s.bgCtx, job.ID, id, ov)
+		go s.runDownload(ytdlp.WithOwner(s.bgCtx, ytdlp.Owner(r.Context())), job.ID, id, ov)
 	}
 	writeJSON(w, http.StatusAccepted, job)
 }
@@ -192,21 +192,35 @@ func (s *Server) handleYtStream(w http.ResponseWriter, r *http.Request) {
 		s.ytError(w, ytdlp.ErrBadTarget)
 		return
 	}
-	u, err := s.yt.StreamURL(r.Context(), id)
-	if err != nil {
-		s.ytError(w, err)
-		return
+	// A cached address can have gone stale; if the media host refuses it,
+	// resolve a fresh one once before giving up.
+	for attempt := 0; ; attempt++ {
+		u, err := s.yt.StreamURL(r.Context(), id)
+		if err != nil {
+			s.ytError(w, err)
+			return
+		}
+		reason := s.stream.copy(w, r, u)
+		if reason == "" {
+			return
+		}
+		s.yt.ForgetStream(r.Context(), id)
+		log.Printf("stream %s: %s (attempt %d)", id, reason, attempt+1)
+		if attempt == 1 || r.Context().Err() != nil {
+			writeErr(w, http.StatusBadGateway, "YouTube refused the stream ("+reason+")")
+			return
+		}
 	}
-	s.stream.copy(w, r, u)
 }
 
-func (p *streamProxy) copy(w http.ResponseWriter, r *http.Request, u *url.URL) {
+// copy relays the upstream body. It returns a non-empty reason, having
+// written nothing, when the media host couldn't serve the request.
+func (p *streamProxy) copy(w http.ResponseWriter, r *http.Request, u *url.URL) string {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, r.Method, u.String(), nil)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "bad upstream request")
-		return
+		return "bad upstream request"
 	}
 	if rng := r.Header.Get("Range"); rng != "" {
 		req.Header.Set("Range", rng)
@@ -214,13 +228,11 @@ func (p *streamProxy) copy(w http.ResponseWriter, r *http.Request, u *url.URL) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0")
 	resp, err := p.client.Do(req)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "upstream unavailable")
-		return
+		return "upstream unreachable: " + err.Error()
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		writeErr(w, http.StatusBadGateway, "upstream refused")
-		return
+		return "upstream HTTP " + resp.Status
 	}
 	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
 		if v := resp.Header.Get(h); v != "" {
@@ -229,4 +241,5 @@ func (p *streamProxy) copy(w http.ResponseWriter, r *http.Request, u *url.URL) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+	return ""
 }

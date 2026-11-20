@@ -77,7 +77,8 @@ func (d *Downloaded) Cleanup() {
 type Manager struct {
 	cfg     config.YtDlp
 	workDir string
-	sem     chan struct{}
+	sem     chan struct{}            // ceiling across all devices
+	owners  map[string]chan struct{} // per-device slots, so one device cannot starve another
 	ffmpeg  bool
 	jsArg   string
 	jsName  string
@@ -88,7 +89,21 @@ type Manager struct {
 	updated  time.Time
 	feed     []Entry
 	feedTime time.Time
+
+	streams map[string]*streamLookup
 }
+
+// streamLookup is a resolved (or still resolving) stream address. Players ask
+// for the same track several times in a row (probe, retry, seek); resolving
+// once and sharing the answer keeps yt-dlp's slots free for everything else.
+type streamLookup struct {
+	done    chan struct{}
+	u       *url.URL
+	err     error
+	expires time.Time
+}
+
+const streamURLTTL = 10 * time.Minute
 
 // New prepares a Manager. workDir is a scratch directory owned by the
 // uploader (downloads land in per-job subdirectories and are always removed).
@@ -99,7 +114,9 @@ func New(cfg config.YtDlp, workDir string) (*Manager, error) {
 	m := &Manager{
 		cfg:     cfg,
 		workDir: workDir,
-		sem:     make(chan struct{}, cfg.MaxConcurrent),
+		sem:     make(chan struct{}, max(cfg.MaxTotal, cfg.MaxConcurrent)),
+		owners:  map[string]chan struct{}{},
+		streams: map[string]*streamLookup{},
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 			// Thumbnails never legitimately redirect.
@@ -203,16 +220,54 @@ func ValidID(s string) bool { return idRe.MatchString(s) }
 
 func watchURL(id string) string { return "https://www.youtube.com/watch?v=" + id }
 
-func (m *Manager) acquire(ctx context.Context) error {
-	select {
-	case m.sem <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ErrBusy
-	}
+type ownerKey struct{}
+
+// WithOwner tags ctx with the device making the request. Each device gets its
+// own yt-dlp slots and its own stream lookups, so several devices playing or
+// searching at once each run their own yt-dlp instead of queueing behind or
+// sharing one another's.
+func WithOwner(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, ownerKey{}, id)
 }
 
-func (m *Manager) release() { <-m.sem }
+// Owner is the device ctx was tagged with by WithOwner ("-" if none).
+func Owner(ctx context.Context) string { return owner(ctx) }
+
+func owner(ctx context.Context) string {
+	if id, _ := ctx.Value(ownerKey{}).(string); id != "" {
+		return id
+	}
+	return "-"
+}
+
+func (m *Manager) ownerSlots(id string) chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.owners[id]
+	if c == nil {
+		c = make(chan struct{}, m.cfg.MaxConcurrent)
+		m.owners[id] = c
+	}
+	return c
+}
+
+// acquire takes one of the device's slots, then one under the global ceiling,
+// and returns the function that gives both back.
+func (m *Manager) acquire(ctx context.Context) (func(), error) {
+	mine := m.ownerSlots(owner(ctx))
+	select {
+	case mine <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ErrBusy
+	}
+	select {
+	case m.sem <- struct{}{}:
+	case <-ctx.Done():
+		<-mine
+		return nil, ErrBusy
+	}
+	return func() { <-m.sem; <-mine }, nil
+}
 
 func (m *Manager) baseArgs() []string {
 	args := []string{"--ignore-config", "--no-cache-dir", "--no-warnings", "--no-colors"}
@@ -270,10 +325,11 @@ func (m *Manager) run(ctx context.Context, args ...string) ([]byte, error) {
 func (m *Manager) runLimited(ctx context.Context, timeout time.Duration, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := m.acquire(ctx); err != nil {
+	release, err := m.acquire(ctx)
+	if err != nil {
 		return nil, err
 	}
-	defer m.release()
+	defer release()
 	return m.run(ctx, args...)
 }
 
@@ -424,10 +480,11 @@ func (m *Manager) Download(ctx context.Context, id string) (*Downloaded, error) 
 	}
 	ctx, cancel := context.WithTimeout(ctx, downloadTO)
 	defer cancel()
-	if err := m.acquire(ctx); err != nil {
+	release, err := m.acquire(ctx)
+	if err != nil {
 		return nil, err
 	}
-	defer m.release()
+	defer release()
 
 	dir, err := os.MkdirTemp(m.workDir, "dl-*")
 	if err != nil {
@@ -525,12 +582,65 @@ func readMeta(path string) Meta {
 	return meta
 }
 
-// StreamURL resolves a short-lived direct audio URL for id. The URL is bound
-// to this server's IP, so clients must fetch it through the uploader.
+// StreamURL returns a direct audio URL for id. The URL is bound to this
+// server's IP, so clients must fetch it through the uploader. Answers are
+// cached briefly and concurrent callers share one yt-dlp run.
 func (m *Manager) StreamURL(ctx context.Context, id string) (*url.URL, error) {
 	if !idRe.MatchString(id) {
 		return nil, ErrBadTarget
 	}
+	key := owner(ctx) + "/" + id
+	m.mu.Lock()
+	l := m.streams[key]
+	if l != nil {
+		select {
+		case <-l.done:
+			if l.err != nil || time.Now().After(l.expires) {
+				l = nil
+			}
+		default:
+		}
+	}
+	if l == nil {
+		l = &streamLookup{done: make(chan struct{})}
+		m.streams[key] = l
+		go func() {
+			// Detached: one caller giving up must not fail the others.
+			l.u, l.err = m.resolveStream(context.WithoutCancel(ctx), id)
+			l.expires = time.Now().Add(streamURLTTL)
+			close(l.done)
+			if l.err != nil {
+				m.mu.Lock()
+				if m.streams[key] == l {
+					delete(m.streams, key)
+				}
+				m.mu.Unlock()
+			}
+		}()
+	}
+	m.mu.Unlock()
+
+	select {
+	case <-l.done:
+		if l.err != nil {
+			return nil, l.err
+		}
+		u := *l.u
+		return &u, nil
+	case <-ctx.Done():
+		return nil, &Error{Kind: KindTimeout, Msg: "yt-dlp took too long on the server and was stopped.", Detail: ctx.Err().Error()}
+	}
+}
+
+// ForgetStream drops a cached address that the media host refused (expired,
+// or tied to something that changed) so the next call resolves a fresh one.
+func (m *Manager) ForgetStream(ctx context.Context, id string) {
+	m.mu.Lock()
+	delete(m.streams, owner(ctx)+"/"+id)
+	m.mu.Unlock()
+}
+
+func (m *Manager) resolveStream(ctx context.Context, id string) (*url.URL, error) {
 	args := append(m.baseArgs(), "--no-playlist", "-f", "bestaudio[ext=m4a]/bestaudio", "-g", "--", watchURL(id))
 	out, err := m.runLimited(ctx, infoTimeout, args...)
 	if err != nil {
