@@ -95,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/v1/ytdlp/trending", s.auth(s.handleYtTrending))
 		mux.HandleFunc("GET /api/v1/ytdlp/related", s.auth(s.handleYtRelated))
 		mux.HandleFunc("GET /api/v1/ytdlp/thumb/{id}", s.auth(s.handleYtThumb))
+		mux.HandleFunc("POST /api/v1/ytdlp/precache/{id}", s.auth(s.handleYtPrecache))
 		mux.HandleFunc("GET /api/v1/ytdlp/stream/{id}", s.auth(withDeadline(6*time.Hour, s.handleYtStream)))
 		mux.HandleFunc("POST /api/v1/ytdlp/download", s.auth(s.handleYtDownload))
 		mux.HandleFunc("GET /api/v1/ytdlp/jobs/{id}", s.auth(s.handleYtJob))

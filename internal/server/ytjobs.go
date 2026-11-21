@@ -92,14 +92,21 @@ func (s *Server) runDownload(ctx context.Context, jobID, videoID string, ov over
 	}
 	s.jobs.update(jobID, func(j *Job) { j.State = "running" })
 
-	d, err := s.yt.Download(ctx, videoID)
-	if err != nil {
-		if e, ok := ytdlp.AsError(err); ok {
-			fail(e.Kind, e.Msg, e.Detail)
-		} else {
-			fail(ytdlp.KindFailed, "The server couldn't download that video.", err.Error())
+	// A track that was already played is sitting in the stream cache: move that into
+	// the library instead of downloading it again.
+	d := s.yt.TakeCached(videoID)
+	fromCache := d != nil
+	if d == nil {
+		var err error
+		d, err = s.yt.Download(ctx, videoID)
+		if err != nil {
+			if e, ok := ytdlp.AsError(err); ok {
+				fail(e.Kind, e.Msg, e.Detail)
+			} else {
+				fail(ytdlp.KindFailed, "The server couldn't download that video.", err.Error())
+			}
+			return
 		}
-		return
 	}
 	defer d.Cleanup()
 
@@ -126,6 +133,9 @@ func (s *Server) runDownload(ctx context.Context, jobID, videoID string, ov over
 	if err != nil {
 		fail(ytdlp.KindFailed, "The server downloaded the track but couldn't save it to the library (check permissions and free space).", err.Error())
 		return
+	}
+	if fromCache {
+		s.yt.DropCached(videoID)
 	}
 	if !res.Duplicate {
 		s.rescan.Schedule()
