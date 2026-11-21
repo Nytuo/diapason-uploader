@@ -270,7 +270,9 @@ func (m *Manager) acquire(ctx context.Context) (func(), error) {
 }
 
 func (m *Manager) baseArgs() []string {
-	args := []string{"--ignore-config", "--no-cache-dir", "--no-warnings", "--no-colors"}
+	// --force-ipv4: googlevideo URLs are bound to the IP that resolved them, and the
+	// stream proxy dials IPv4 only, so both must agree or YouTube answers 403.
+	args := []string{"--ignore-config", "--no-cache-dir", "--no-warnings", "--no-colors", "--force-ipv4"}
 	if m.cfg.OutboundProxy != "" {
 		args = append(args, "--proxy", m.cfg.OutboundProxy)
 	}

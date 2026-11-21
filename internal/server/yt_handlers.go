@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -165,7 +166,11 @@ type streamProxy struct{ client *http.Client }
 func newStreamProxy() *streamProxy {
 	return &streamProxy{client: &http.Client{
 		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
+			Proxy: http.ProxyFromEnvironment,
+			// IPv4 only, matching yt-dlp's --force-ipv4: the resolved URL is bound to one IP family.
+			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp4", addr)
+			},
 			ResponseHeaderTimeout: 20 * time.Second,
 			IdleConnTimeout:       30 * time.Second,
 		},
